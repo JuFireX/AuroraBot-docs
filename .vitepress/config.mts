@@ -10,6 +10,7 @@ export default withMermaid(
     cleanUrls: true,
     lastUpdated: true,
     ignoreDeadLinks: true,
+    srcExclude: ["README.md"],
     head: [
       [
         "link",
