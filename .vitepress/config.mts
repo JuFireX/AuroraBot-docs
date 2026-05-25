@@ -10,7 +10,7 @@ export default withMermaid(
     cleanUrls: true,
     lastUpdated: true,
     ignoreDeadLinks: true,
-    srcExclude: ["README.md"],
+    srcExclude: ["README.md", "README.*.md"],
     head: [
       [
         "link",
@@ -54,6 +54,7 @@ export default withMermaid(
           sortMenusByFrontmatterOrder: true,
           frontmatterOrderDefaultValue: 99,
           collapsed: false,
+          excludeByGlobPattern: ["README.md", "README.*.md"],
         });
         // 确保每个 link 以 "/" 开头，否则 VitePress prev/next 匹配会失效
         const prefixSlash = (items: any) => {

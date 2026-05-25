@@ -1,8 +1,12 @@
 <p align="center">
-  <img src="assets/logo.svg" width="120" alt="AuroraBot Logo" />
+  <img src="./assets/logo.svg" width="120" alt="AuroraBot Logo" />
 </p>
 
 <h1 align="center">AuroraBot 文档站</h1>
+
+<p align="center">
+  <b>中文</b> | <a href="README.en.md">English</a> | <a href="README.ja.md">日本語</a>
+</p>
 
 <p align="center">
   <em>新一代内驱式、自主决策的智能体框架</em>
