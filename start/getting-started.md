@@ -14,18 +14,17 @@ order: 2
 
 ## 前期准备
 
-- Python `3.10+`
-- _当你需要本地查看文档站时:_ Node.js `20+`
+- `Python >=3.12, <3.13`
 
 ## 克隆仓库
 
 ```bash
-git clone https://github.com/JuFireX/AuroraBot.git
+git clone https://github.com/AuroraBot-Dev/AuroraBot.git
 cd AuroraBot
 ```
 
 ::: tip
-或者你可以通过 [Releases](https://github.com/JuFireX/AuroraBot/releases) 下载最新稳定版本的源码压缩包, 并解压到 `AuroraBot` 目录下.
+或者你可以通过 [Releases](https://github.com/AuroraBot-Dev/AuroraBot/releases) 下载最新稳定版本的源码压缩包, 并解压到 `AuroraBot` 目录下.
 :::
 
 ## 安装依赖
@@ -38,7 +37,7 @@ uv sync
 ```
 
 ::: tip
-如果你的网络环境不好导致`pip`下载缓慢, 你可以尝试使用以下命令来加速下载:
+如果你的网络环境不好导致 `pip` 下载缓慢, 你可以尝试使用以下命令来加速下载:
 
 ```bash
 pip install uv -i https://pypi.tuna.tsinghua.edu.cn/simple
@@ -61,12 +60,23 @@ cp .env.example .env
 ONEBOT_ACCESS_TOKEN=
 
 # 模型配置
-DEEPSEEK_URL_BASE=https://api.deepseek.com   # 默认为 DeepSeek
+DEEPSEEK_URL_BASE=https://api.deepseek.com
 DEEPSEEK_API_KEY=
-LITELLM_MODEL=deepseek/deepseek-v4-flash     # 默认为 DeepSeek
+LITELLM_MODEL=deepseek/deepseek-v4-flash
 
 # 记忆配置
-MEM0_API_KEY=
+MEM0_VECTOR_STORE=chroma
+MEM0_COLLECTION_NAME=aurora_memory_bgem3
+
+MEM0_EMBEDDER_PROVIDER=openai
+MEM0_EMBEDDER_API_KEY=
+MEM0_EMBEDDER_BASE_URL=https://api.siliconflow.cn/v1/
+MEM0_EMBEDDER_MODEL=BAAI/bge-m3
+
+MEM0_LLM_PROVIDER=deepseek
+MEM0_LLM_API_KEY=
+MEM0_LLM_BASE_URL=https://api.deepseek.com
+MEM0_LLM_MODEL=deepseek-v4-flash
 ```
 
 更多配置说明见 [配置说明](./configuration)
@@ -79,7 +89,7 @@ uv run bot.py
 ```
 
 ::: tip
-此时你的Bot将会以默认人格`小光`启动，但是你还没有手段来与她互动. 你可以启动你的应用适配器，例如 [NapCat](https://github.com/NapNeko/NapCatQQ), 然后就可以试着向她发送消息了!
+此时你的Bot将会以默认人格**小光**启动，但是你还没有手段来与她互动. 你可以启动你的应用适配器，例如 [NapCat](https://github.com/NapNeko/NapCatQQ), 然后就可以试着向她发送消息了!
 :::
 
 ::: tip
@@ -88,16 +98,4 @@ uv run bot.py
 
 ::: info
 框架第一适配 NapCat 适配器. 其他适配器将在后续测试后逐渐开放.
-:::
-
-## 离线文档
-
-```bash
-cd docs
-npm install
-npm run docs:dev
-```
-
-::: tip
-文档站默认启动在 `localhost:5173/AuroraBot/` 上. 打开浏览器访问即可.
 :::

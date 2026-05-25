@@ -14,7 +14,7 @@ AuroraBot 采用配置分离的策略：分为框架配置/环境变量、平台
 
 ## 环境变量
 
-通过项目根目录的 `.env` 文件设置：
+通常位于 `./.env`.
 
 #### 环境配置
 
@@ -40,9 +40,20 @@ AuroraBot 采用配置分离的策略：分为框架配置/环境变量、平台
 
 #### 记忆配置
 
-| 变量           | 说明              | 可选值 |
-| -------------- | ----------------- | ------ |
-| `MEM0_API_KEY` | Mem0 记忆服务密钥 | 字符串 |
+通过 mem0 驱动，L3 语义记忆需配置 embedding 和 LLM 后端：
+
+| 变量                     | 说明                       | 默认值                           |
+| ------------------------ | -------------------------- | -------------------------------- |
+| `MEM0_VECTOR_STORE`      | 向量存储引擎               | `chroma`                         |
+| `MEM0_COLLECTION_NAME`   | ChromaDB 集合名            | `aurora_memory_bgem3`            |
+| `MEM0_EMBEDDER_PROVIDER` | Embedding 服务提供方       | `openai`                         |
+| `MEM0_EMBEDDER_API_KEY`  | Embedding API 密钥（必填） | —                                |
+| `MEM0_EMBEDDER_BASE_URL` | Embedding API 地址         | `https://api.siliconflow.cn/v1/` |
+| `MEM0_EMBEDDER_MODEL`    | Embedding 模型             | `BAAI/bge-m3`                    |
+| `MEM0_LLM_PROVIDER`      | mem0 内置 LLM 提供方       | `deepseek`                       |
+| `MEM0_LLM_API_KEY`       | mem0 LLM API 密钥（必填）  | 同 `DEEPSEEK_API_KEY`            |
+| `MEM0_LLM_BASE_URL`      | mem0 LLM API 地址          | `https://api.deepseek.com`       |
+| `MEM0_LLM_MODEL`         | mem0 LLM 模型              | `deepseek-v4-flash`              |
 
 #### 运行配置
 
@@ -63,7 +74,11 @@ AuroraBot 采用配置分离的策略：分为框架配置/环境变量、平台
 
 ## 平台配置
 
-通过 `apps/config.yaml` 配置. 平台配置即平台视角的配置，决定哪些 App 被启用以及启动参数：
+通常位于 `./apps/config.yaml`.
+
+::: tip
+你可以自由地决定哪些 App 被启用以及其启动参数
+:::
 
 ```yaml
 apps:
@@ -74,15 +89,17 @@ apps:
       emit_startup_event: true
 ```
 
-::: tip
-平台只关心应用开不开、怎么开，不关心应用内部的业务参数。
-:::
-
 ## 应用配置
 
-通常位于 `apps/<app>/config.example.json`. 每个应用自带一份配置示例，描述自身需要的参数。实际运行时，应用从 `data/app_data/<package>/config.json` 读取配置。
+通常位于 `./apps/<app>/config.example.json`.
 
-例如示例`example`应用中：
+::: warning
+一般情况下用户不应手动修改应用配置, 这应当由应用自动完成.
+:::
+
+::: tip
+每个应用自带一份配置示例，描述自身需要的参数。运行时，应用应当从 `app_data` 中自动读取配置
+:::
 
 ```json
 {
@@ -91,15 +108,17 @@ apps:
 }
 ```
 
-::: info
-一般情况下用户不应手动修改应用配置, 这应当由应用自动完成.
-:::
-
 ## 人格文档
 
-通常位于`src/brain/prompts/`目录下.
+通常位于 `./src/brain/prompts/`.
 
+::: warning
+现行人格文档配置缺乏规范, 将会在后期版本逐渐改善配置体验.
+:::
+
+::: tip
 此处给出默认人格`小光`的人格文档：
+:::
 
 ::: details
 
@@ -144,12 +163,3 @@ apps:
 ```
 
 :::
-
-::: info
-现行人格文档配置缺乏规范, 将会在后期版本逐渐完善.
-:::
-
-## 边界与限制
-
-- 配置热加载尚未支持，修改后需重启
-- 配置校验尚未集成，错误配置可能导致静默失败
