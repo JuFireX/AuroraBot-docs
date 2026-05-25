@@ -89,7 +89,7 @@ export default withMermaid(
       },
       footer: {
         message: "Built with VitePress",
-        copyright: "Copyright © 2026 JuFireX",
+        copyright: "Copyright © JuFireX | AuroraBot-Dev",
       },
     },
   }),
