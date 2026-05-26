@@ -6,66 +6,88 @@ order: 2
 
 # 平台运行时
 
-本文描述 `src/main.py` 启动后平台的运作方式。
+本文描述平台部分的结构和启动后的运作方式
 
-## 体系总述
-
-`platform`：
-
-- 找到启用的应用，把它们运行起来
-- 读 `manifest.yaml`，搞清楚每个 app 能干什么
-- 给每个 app 塞一根 `PlatformAPI` 的管子
-- 把命令记在表上、把事件排进队列
-- 管理 app 从启动到停止的完整生命周期
-
-`Apps`：
-
-- 从外面接收输入
-- 把输入变成标准化事件扔出去
-- 暴露干脆利落的命令
-- 管好自己的小仓库
-
-::: tip
-所以说，App 就像是 **传感器 + 执行器**
+::: warning
+源码 API 文档正在施工中...
 :::
 
-## 启动链路
+## 启动
+
+1. `discover_apps()` 扫描 `apps/` 目录，识别同时包含 `manifest.yaml` 和 `__init__.py` 的合法应用
+2. 加载 `apps/config.yaml`，归一化配置，按 `enabled` 字段筛选要启动的应用
+3. `instantiate_app()` 动态导入模块并实例化 Application 对象，注入启动参数
+4. `app_host.register()` 加载 `manifest.yaml`，注册命令到命令表，通过 `_bind()` 注入 `PlatformAPI`，最后调用 `app.on_start()`
+5. 管理 app 从启动到停止的完整生命周期
+
+**图解**
 
 ```mermaid
 flowchart TB
-    subgraph ROW1["注册阶段"]
+    subgraph ROW1["启动与发现"]
         direction LR
         START["NoneBot Startup"]
-        LOADCFG["Load apps/config.yaml"]
-        REGISTER["Register Apps"]
+        DISCOVER["discover_apps()<br/>扫描 apps/"]
+        LOADCFG["load_apps_config()<br/>归一化配置"]
     end
 
-    subgraph ROW2["运行阶段"]
+    subgraph ROW2["注册与绑定"]
         direction LR
-        BIND["Bind PlatformAPI"]
-        APPSTART["app.on_start()"]
-        LOOP["run_app_loop()"]
+        INST["instantiate_app()<br/>动态导入实例化"]
+        REGISTER["app_host.register()"]
+        MANIFEST["加载 manifest.yaml<br/>注册命令"]
+        BIND["_bind(PlatformAPI)"]
+        ONSTART["app.on_start()"]
     end
 
-    subgraph ROW3["事件输出"]
+    START --> DISCOVER --> LOADCFG
+    LOADCFG --> INST --> REGISTER
+    REGISTER --> MANIFEST --> BIND
+    BIND --> ONSTART
+```
+
+## 运行时
+
+`app.on_start()` 完成后，`run_app_loop()` 进入主循环，按固定帧间隔驱动所有 App:
+
+```python
+# src/platform/loop.py
+while not stop_event.is_set():
+    await host.tick()       # 遍历所有 App → app.on_tick()
+    await asyncio.sleep(interval)
+```
+
+每帧调用 `host.tick()` → 各 App 的 `app.on_tick()` → App 通过 `PlatformAPI.emit_event()` 将 `AppEvent` 推入 `ApplicationHost._events` 双端队列。至此平台侧的事件生产完成，事件由 [内核运行时](./kernel-runtime.md) 的事件桥消费处理。
+
+::: tip
+仅在 `RUN_MODE` 为 `app` / `application` / `prod` 时启动 `run_app_loop()`。若 `RUN_MODE` 包含 `agent` / `core`，则同时启动 `Circuit + EventBridge`，详见 [内核运行时](./kernel-runtime.md)。
+:::
+
+**图解**
+
+```mermaid
+flowchart TB
+    subgraph ROW1["启动运行"]
+        direction LR
+        ONSTART["app.on_start() 完成"]
+        LOOP["run_app_loop()<br/>应用主循环 (可选)"]
+    end
+
+    subgraph ROW2["每帧调度"]
         direction LR
         TICK["host.tick()"]
         APPTICK["app.on_tick()"]
-        EMIT["emit AppEvent"]
-        QUEUE["Event Queue"]
+        EMIT["emit_event()"]
+        QUEUE["Event Queue<br/>(ApplicationHost._events)"]
     end
 
-    START --> LOADCFG
-    LOADCFG --> REGISTER
-    REGISTER --> BIND
-    BIND --> APPSTART --> LOOP
-    LOOP --> TICK
-    TICK --> APPTICK --> EMIT --> QUEUE
+    ONSTART --> LOOP
+    LOOP --> TICK --> APPTICK --> EMIT --> QUEUE
 ```
 
 ## 核心对象
 
-### `ApplicationHost` — 宿主管家
+### `ApplicationHost` 应用宿主
 
 `ApplicationHost` 是 app 们的房东，目前身兼数职：
 
@@ -90,6 +112,15 @@ flowchart TB
 - `data_dir` — 我的小仓库
 - `package` — 我是谁
 - `log()` — 记个日志
+
+## 关闭
+
+`shutdown_agent()` 中平台侧的收尾顺序:
+
+1. `_stop_event.set()` — 通知 `run_app_loop()` 主循环停止
+2. 取消内核侧任务 (bridge / circuit, 详见 [内核运行时 - 关闭](./kernel-runtime.md#关闭))
+3. `_app_task.cancel()` — 取消 `run_app_loop()` 协程
+4. `app_host.stop_all()` — 遍历所有 App 调用 `app.on_stop()`，清空实例、命令表、事件队列
 
 ## 内建应用概览
 
