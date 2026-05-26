@@ -1,105 +1,97 @@
 ---
-title: 统一联合记忆
-description: 统一联合记忆（Unified Associative Memory）的设计深度——图式事实记忆、情景记忆与知识图谱经验记忆。
-order: 5
+title: 记忆系统
+description: L1 工作记忆 / L2 情景记忆 / L3 语义记忆——三级联合记忆的存储与检索方式。
+order: 6
 ---
 
-# 统一联合记忆
+# 记忆系统
 
-AuroraBot 的记忆不是"把对话存下来"，而是**结构化地生长**。统一联合记忆（Unified Associative Memory）借助 mem0 实现图式的事实记忆、情景记忆与知识图谱经验记忆，覆盖所有认知活动。
+记忆系统是 CortexForge 认知引擎的 memory 子系统。`UnifiedMemoryManager` 封装了 L1/L2/L3 的写入与检索接口，认知节点通过它存取记忆。
 
 **挼挼如是说**
 
-> 大多数 chatbot 的记忆是一条线——上一句接下一句，最多往前翻几轮。AuroraBot 的记忆是一张网——你说过的事、她做过的事、她对自己的评价、甚至她"感觉"到的趋势，都会被织进同一张图里。下次她做决策的时候，不是翻"历史记录"，而是在图里找"跟现在最相关的那几个节点"。
+> 大部分 bot 的记忆是多翻几轮对话。AuroraBot 不一样——L1 记住刚才说了啥，L2 按时间线存档，L3 用向量相似度找"跟现在最相关的"。三层各司其职，谁也不替代谁。
 
-## 为什么不是线性记忆
+## 三级结构
 
-线性记忆的问题：
+| 层级            | 类               | 存储方式         | 容量        | 用途           |
+| --------------- | ---------------- | ---------------- | ----------- | -------------- |
+| **L1 工作记忆** | `WorkingMemory`  | 内存列表（FIFO） | 最近 10 条  | 当前会话上下文 |
+| **L2 情景记忆** | `EpisodicMemory` | JSON 文件追加    | 50 条后压缩 | 按时间线存档   |
+| **L3 语义记忆** | `SemanticMemory` | ChromaDB 向量    | 无上限      | 语义相似度检索 |
 
-- 只能按时间顺序检索，无法按语义关联跳转
-- 对话记忆丢掉了"为什么做这个决策"的上下文
-- 不同来源的记忆（对话、行动、自我评估）无法融合
+核心数据流：
 
-统一联合记忆的设计意图：
-
-- 所有认知活动——对话、计划、动作、自我评估——都写入同一张图
-- 记忆之间通过关系边连接，形成可遍历的关联网络
-- 检索时可以沿边跳跃，找到"跟当前最相关"的记忆片段
-
-## 三类记忆
-
-### 图式事实记忆（Graph-based Fact Memory）
-
-将离散的事实编码为图中的节点和边：
-
-- **节点** — 实体（人、事件、概念）
-- **边** — 关系（"说过"、"属于"、"导致"）
-- **更新** — 新事实不覆盖旧事实，而是在图中新增节点和边
-
-### 情景记忆（Episodic Memory）
-
-记录"发生了什么"的时序片段：
-
-- 每次对话、每个行动、每次自我评估都是一个情景片段
-- 情景之间通过时间边和因果边连接
-- 检索时可以"回想"相关情景的完整上下文
-
-### 知识图谱经验记忆（Knowledge Graph Experience Memory）
-
-从事实和情景中抽象出的"经验"：
-
-- 不是"某年某月发生了什么"，而是"类似情况下她倾向于怎么做"
-- 经验会随着时间演化——反思节点的自我评估会更新经验权重
-- 这是她"性格会偏移、口吻会老化"的底层机制
-
-## 与 mem0 的关系
-
-统一联合记忆借助 [mem0](https://github.com/mem0ai/mem0) 作为基础设施：
-
-- mem0 提供图存储、向量检索和记忆更新管道
-- AuroraBot 在 mem0 之上封装了认知活动的写入/检索接口
-- 所有记忆操作通过 Brain 层统一网关进行，不直接暴露给 App 或 Kernel
-
-## 覆盖范围
-
-统一联合记忆不仅覆盖"对话"，而是覆盖所有认知活动：
-
-| 来源                    | 写入内容            |
-| ----------------------- | ------------------- |
-| 对话（QQ）              | 对话情景、用户印象  |
-| 计划（Planner）         | 计划记录、决策理由  |
-| 动作（Executor）        | 执行结果、成功/失败 |
-| 自我评估（反思节点）    | 自我评价、倾向调整  |
-| 日记（Diary App）       | 日记条目            |
-| 闹钟（Alarm App）       | 提醒事件            |
-
-## 当前状态
-
-- 记忆系统的设计已完成，基于 mem0 的 L1/L2/L3 三级联合记忆机制（Working, Episodic, Semantic）已经实现整合。
-- 提供了统一网关 `UnifiedMemoryManager`，支持 `process_interaction` (一键写入) 与 `retrieve_context` (一键读取)，供各认知节点调用。
-- 取代了旧版仅依靠 JSON 追加的机械 Router，通过向量化及大模型实现了图式事实的智能提取。
-- 统一联合记忆是"认知节点插件体系开放"的前置依赖之一。
-
-## 目前支持的api接口
-
-|       功能         |     api       |
-|-----------------------|--------------------|
-| 一键读取 | `retrieve_context` |
-| 一键写入 | `process_interaction` |
-
-- 使用示例
 ```python
-from src.brain import memory_manager
+# 写入（一键写入）
+memory.process_interaction(content=msg, role="user", user_id="xxx")
+    → L1: working.add(content, role)           # 追加到内存列表
+    → L2: episodic.record_event(type, content) # 追加到 JSON 文件
+    → L3: semantic.extract_and_store(text)     # LLM 提取事实 → ChromaDB
 
-# 写入交互记忆
-memory_manager.process_interaction(content="你好", role="user", user_id="12345")
-
-# 检索综合上下文
-context = memory_manager.retrieve_context(current_query="今天天气", user_id="12345")
+# 读取（一键检索）
+context = memory.retrieve_context(query, user_id)
+    → L1: working.get_context()                # 全量返回
+    → L2: episodic.retrieve_since(timestamp)   # 按时间范围
+    → L3: semantic.retrieve(query, k=5)        # 向量相似度 top-k
 ```
+
+### L1 工作记忆
+
+`src/brain/memory/working.py`
+
+- 纯内存列表，`max_items = 10`
+- 超出容量时 FIFO 淘汰最早记录
+- 不持久化，进程重启后清空
+
+### L2 情景记忆
+
+`src/brain/memory/episodic.py`
+
+- 追加写入 `data/memory/episodes.json`
+- 超过 50 条触发折叠压缩：调用 DeepSeek API 将历史记录浓缩为一条 summary
+- 带防抖去重：连续相同内容不重复写入
+- 按时间范围检索，返回时间线片段
+
+### L3 语义记忆
+
+`src/brain/memory/semantic.py`
+
+- 基于本地 ChromaDB 持久化向量存储
+- 写入时通过 LLM 从文本提取结构化事实和关系
+- 检索时按向量相似度返回 top-k 相关记忆
+- 支持 `MemoryItem` 的增删改查
+
+## 统一入口
+
+```python
+class UnifiedMemoryManager:
+    def process_interaction(content, role, user_id) → None   # 一键写入
+    def retrieve_context(query, user_id) → MemoryContext     # 一键检索
+    def initialize_system_prompt(user_id, core_prompt) → None  # 初始化
+```
+
+Agent 节点通过构造时注入的 `UnifiedMemoryManager` 实例调用这些方法，无需关心底层 L1/L2/L3 的流转。
+
+## 当前覆盖范围
+
+目前的记忆写入来源：
+
+| 来源                     | 写入方式                                                                      |
+| ------------------------ | ----------------------------------------------------------------------------- |
+| 外部事件（对话等）       | `MemoryRouter` 读取 `memory/pending/event_*.json`，调用 `process_interaction` |
+| PlanAgent / ExecuteAgent | 执行期间通过 `_memory` 引用写入                                               |
+
+## 设计约束
+
+- 节点不直接操作 L1/L2/L3，统一通过 `UnifiedMemoryManager` 存取
+- `process_interaction()` 一键写入三层，保证 L1 ↔ L2 ↔ L3 数据一致
+- L1 纯内存、不持久化，进程重启后清空
+- L2 按时间线追加，带防抖去重: 连续相同内容不重复写入
+- L3 写入时通过 LLM 提取结构化事实，检索时按向量相似度 top-k 返回
 
 ## 下一步阅读
 
-- 想理解认知架构全貌：读 [认知架构](./brain-architecture.html)
-- 想理解节点如何存取记忆：读 [节点系统](./node-system.html)
-- 想理解内核如何调度记忆节点：读 [内核运行时](./kernel-runtime.html)
+- 想了解记忆在认知管线中的位置: 读 [认知引擎架构](./brain-architecture.html)
+- 想了解节点系统: 读 [节点系统](./node-system.html)
+- 想了解 Circuit 调度: 读 [内核运行时](./kernel-runtime.html)
