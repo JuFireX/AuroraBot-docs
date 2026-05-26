@@ -1,138 +1,112 @@
 ---
 title: 内核运行时
-description: Circuit + EventBridge 驱动的事件总线调度——Kernel 层的实际运作机制。
-order: 6
+description: Circuit + EventBridge 的实际运行机制——启动、调度、文件落盘与节点执行循环。
+order: 3
 ---
 
 # 内核运行时
 
-Kernel 是 AuroraBot 的调度心脏。认知拓扑电路（Circuit）通过文件事件总线驱动节点，应用事件经 EventBridge 桥接为文件事件，形成完整循环。旧调度器 `loop.py` 已被完全移除。
+本文描述 `src/main.py` 启动后认知引擎的运作方式。
 
-## 整体架构
+## 启动
 
-```mermaid
-flowchart LR
-    subgraph APP["App 循环"]
-        TICK["run_app_loop<br/>定时 tick"]
-    end
+`main.py` 的 `startup_agent()` 按以下顺序初始化：
 
-    subgraph BRIDGE["EventBridge"]
-        POLL["drain_events<br/>0.5s 轮询"]
-        WRITE["写 inbox/event_*.json"]
-    end
+1. `Config.ensure_dirs()` — 创建 `data/`、`data/kernel/` 等目录
+2. `load_apps_config()` — 读 `apps/config.yaml`
+3. 遍历启用的 App，调用 `app_host.register()`（读 `manifest.yaml`、注册命令、调 `on_start()`）
+4. `build_circuit(app_host)` — 读 `topology.yaml`，通过 `NODE_REGISTRY` 实例化节点
+5. `circuit.start()` — 启动 `dispatch_forever` 协程 + 各个 `node.run()` 协程
+6. `circuit._bootstrap_heartbeat()` — 写入首个 `heartbeat/tick.json`，注入初始 `FileEvent`
+7. 根据 `RUN_MODE` 创建 `run_app_loop` 和 `run_event_bridge` 协程
 
-    subgraph CIRCUIT["Circuit + FileEventBus"]
-        DISPATCH["dispatch_forever<br/>事件分发"]
-        NODES["Node 网络<br/>on_event + execute"]
-        HEARTBEAT["_bootstrap_heartbeat<br/>初始脉冲"]
-    end
+## 运行时协程
 
-    APP -->|host.emit_event| BRIDGE
-    BRIDGE -->|apply_update| CIRCUIT
-    HEARTBEAT -->|首次 tick| NODES
-    NODES -->|FileUpdate 落盘| NODES
-```
-
-## 三类并行的协程循环
-
-Kernel 的核心由三个独立的 `asyncio.Task` 组成，在 `main.py` 启动时创建：
+`main.py` 通过 `asyncio.create_task` 创建两个顶层 `asyncio.Task`，`Circuit` 内部另有一组协程：
 
 ### ① App 循环 — `run_app_loop()`
 
-每 `APP_FRAME_INTERVAL`（默认 1s）调用一次 `ApplicationHost.tick()`。`tick()` 遍历所有已注册 App 执行 `on_tick()`，App 在这期间自主感知外部变化（如 QQ 的新消息）并通过 `PlatformAPI.emit_event()` 上报。
+`src/platform/loop.py`
 
-仅在 `RUN_MODE` 包含 `app` / `application` / `prod` 时启动。
+```python
+while not stop_event.is_set():
+    await host.tick()     # 遍历所有 App，调用 on_tick()
+    await asyncio.sleep(interval)
+```
 
-### ② EventBridge — `run_event_bridge()`
+App 在 `on_tick()` 中感知外部变化（如 QQ 的 `on_message`），通过 `PlatformAPI.emit_event()` 将 `AppEvent` 推入 `ApplicationHost._events` 双端队列。
 
-每 `HEARTBEAT_INTERVAL`（默认 0.5s）轮询 `ApplicationHost.drain_events()`。将积压的 `AppEvent` 序列化为 JSON 文件写入 `data/kernel/inbox/event_<type>_<id>.json`。文件落盘自动触发 `FileEvent` 注入总线，唤醒匹配的下游节点。
+仅在 `RUN_MODE` 为 `app` / `application` / `prod` 时启动。
 
-仅在 `RUN_MODE` 包含 `agent` / `core` / `prod` 时启动。
+### ② 事件桥 — `run_event_bridge()`
 
-### ③ Node 电路 — `Circuit`
+`src/brain/nodes/event_bridge.py`
+
+```python
+while not stop_event.is_set():
+    events = host.drain_events()
+    for event in events:
+        file_path = f"inbox/pending/event_{type}_{id}.json"
+        circuit.apply_update(FileUpdate(...), node_id="event_bridge")
+    await asyncio.sleep(interval)
+```
+
+`apply_update()` 由 `FileEventBus` 执行：写文件 → 生成 `FileEvent` → `publish` 入队列。
+
+仅在 `RUN_MODE` 为 `agent` / `core` / `prod` 时启动。
+
+### ③ 认知电路 — `Circuit` + `FileEventBus`
+
+`src/brain/kernel/circuit.py` + `src/brain/kernel/event_bus.py`
 
 启动流程：
 
-1. **构建**：`node_factory.py` 读取 `topology.yaml` 邻接表，根据 `type` 从 `NODE_REGISTRY` 分派构造器，创建所有节点实例
-2. **装配**：`Circuit(nodes)` 创建 `FileEventBus`，注入了所有节点的 `_bus` 引用
-3. **启动**：`circuit.start()` 启动 `dispatch_forever` 协程 + 每个 `node.run()` 协程
-4. **自举**：`_bootstrap_heartbeat()` 写入初始 `heartbeat/tick.json`，注入首个 `FileEvent`，启动自持振荡
+1. `FileEventBus(nodes)` 创建事件总线和 `asyncio.Queue`
+2. `dispatch_forever()` 协程启动，持续从队列取事件
+3. 每个节点创建 `node.run()` 协程，等待 `_ready_event` 被置位
+4. `_bootstrap_heartbeat()` 注入初始脉冲
 
 运行时每个周期：
 
 ```
-FileEvent → dispatch_forever → 遍历 nodes → on_event() 匹配?
-  └─ 是 → state = READY → _ready_event.set()
-            └─ node.run() 被唤醒 → execute() → FileUpdate
-                  └─ apply_update() 落盘 → publish 下游 FileEvent → 回到顶部
-  └─ 否 → 继续等待下一事件
+FileEvent → dispatch_forever() 从队列取出
+  → 遍历 nodes → on_event() 匹配?
+      → 是 → state = READY → _ready_event.set()
+              → node.run() 被唤醒 → execute() → [FileUpdate, ...]
+                  → apply_update(update) 落盘 → publish 新 FileEvent → 回到顶部
+      → 否 → 继续等待下一事件
 ```
 
 ## 节点生命周期
 
 ```
-IDLE ──on_event() 匹配──▶ READY ──调度到──▶ RUNNING ──execute() 完成──▶ IDLE
-                            │                  │
-                            │              WAITING (Agent LLM 等待中)
-                            │                  │
-                            │               ERROR (触发修复 Router)
-                            │                  │
-                            └──TERMINATED──◀──┘ (停止信号)
+IDLE ──on_event() 匹配──▶ READY ──被 run() 唤醒──▶ RUNNING ──execute() 完成──▶ IDLE
+                            │                       │
+                            └──TERMINATED◀──────────┘ (Circuit.stop())
 ```
 
-- `IDLE`：空闲，等待事件
-- `READY`：事件匹配，等待调度器分配执行机会
-- `RUNNING`：正在执行 `execute()`（Agent 可能在此状态长时间等待 LLM 响应）
-- `WAITING`：执行中遇到异步等待（仅 Agent）
-- `ERROR`：执行异常
-- `TERMINATED`：节点/子图关闭
+Agent 在执行期间可能长时间等待 LLM 响应，期间状态保持 `RUNNING`。Router 执行时间可预测，通常毫秒级完成。
 
-## HeartbeatRouter — 自主意识脉冲
+## 文件写入与锁
 
-`HeartbeatRouter` 是系统中的自持振荡器。它在 `execute()` 中等待 `interval_sec`（默认 300s）后写入新的 `heartbeat/tick.json` 并发布 `FileEvent`。这个脉冲驱动 `GoalGeneratorAgent` 在沉默过久时主动生成意图。
+`FileEventBus.apply_update()` 为每个文件路径维护一个 `asyncio.Lock`：
 
-AuroraBot 从"回应用户的镜子"变成"会自己呼吸的生命体"——她不是因为有人说话才醒来，而是内部的钟摆从不停止。
-
-## 拓扑配置
-
-节点网络通过 `topology.yaml` 声明式配置：
-
-```yaml
-nodes:
-  - id: heartbeat
-    type: heartbeat
-    config:
-      interval_sec: 300
-
-  - id: planner
-    type: planner
-    watch:
-      - "inbox/event_*.json"
-      - "intent/goal*.json"
-
-  - id: priority-switch
-    type: switch
-    config:
-      guard_pattern: "plans/plan_*.json"
-      condition_field: "priority"
-      condition_op: ">"
-      condition_value: 70
+```python
+async def apply_update(self, update, node_id):
+    lock = self._get_lock(descriptor.path)
+    async with lock:
+        self._write_file(...)
+    self.publish(FileEvent(path=descriptor.path, change_type="write"))
 ```
 
-节点间无需显式声明边——`watch`（监听的文件模式）和 `emit`（产出的文件路径）自动形成隐式有向边，邻接匹配即为通路。
+同一文件被多个节点并发写入时，`asyncio.Lock` 保证串行化。文件格式支持 `"json"` 和普通文本，json 模式下可选 `"append"` 模式（向数组追加元素）。
 
-## RUN_MODE 组合
+## 关闭
 
-| 模式            | App 循环 | EventBridge + Circuit |
-| --------------- | -------- | --------------------- |
-| `prod`          | ✅       | ✅                    |
-| `app`           | ✅       | ❌                    |
-| `application`   | ✅       | ❌                    |
-| `agent`         | ❌       | ✅                    |
-| `core`          | ❌       | ✅                    |
+`shutdown_agent()` 按顺序：
 
-## 下一步阅读
-
-- 想理解 Node 基类细节：读 [节点系统](./node-system.html)
-- 想理解认知全貌：读 [认知架构](./brain-architecture.html)
-- 想看节点邻接拓扑：[kernel-runtime-flow 流程图](../appendix/kernel-runtime-flow.html)
+1. `_stop_event.set()` — 通知所有协程停止
+2. 取消 `_bridge_task`（事件桥）
+3. `circuit.stop()` — 将所有节点标记 `TERMINATED`，取消各 `node.run()` 协程和 `dispatch_forever`
+4. 取消 `_app_task`（App 循环）
+5. `app_host.stop_all()` — 调用所有 App 的 `on_stop()`

@@ -1,93 +1,60 @@
 ---
 title: 节点系统
-description: Node / Agent / Router 的设计细节——文件描述符、锁策略、状态机与代码对应。
-order: 4
+description: Node / Agent / Router 的数据结构与行为——FileDescriptor、FilePattern、FileEvent、FileUpdate。
+order: 5
 ---
 
 # 节点系统
 
-认知层的认知能力由节点承载。节点不是"AI Agent"的简单封装——它是文件驱动认知拓扑中的**原子工作单元**。代码实现见 `src/brain/kernel/base.py`。
+认知层的认知能力由节点承载。节点是文件驱动认知管道中的工作单元。代码实现见 `src/brain/kernel/base.py`。
+
+**挼挼如是说**
+
+> Agent 用 LLM 干活，Router 不用——就这么简单。Router 快、便宜、可预测；Agent 慢、贵、但有思考能力。大多数时候 Router 就够了，只有需要"理解"的时候才上 Agent。
 
 ## 类的层次
 
 ```
-Node (ABC)             # 抽象基类：id, type, guards, produces, state
-├── Agent(Node)        # LLM 驱动型：think(), system_prompt
-└── Router(Node)       # 纯逻辑型：零 LLM，控制结构原语
+Node (ABC)             # 抽象基类
+├── Agent(Node)        # LLM 驱动型
+└── Router(Node)       # 纯逻辑型
 ```
-
-**挼挼如是说**
-
-> Agent 是会"想"的节点——它坐在桌前，翻开输入文件，用 LLM 思考一番，然后写出新文件。Router 是不会"想"的节点——它就是逻辑电路，看到条件 A 就发往节点 B，看到条件 C 就发往节点 D。快、便宜、可预测。
 
 ## Node 基类
 
 ```python
 class Node:
     id: str                          # 唯一标识
-    type: "agent" | "router"         # 节点类型
-    guards: List[FilePattern]        # 守护的文件模式（glob）
-    produces: List[FileDescriptor]   # 产出的文件描述符
-    state: NodeState                 # 当前状态
+    guards: List[FilePattern]        # 监听的 glob 模式列表
+    produces: List[FileDescriptor]   # 产出的文件描述符列表
+
+    def on_event(event) -> bool      # 事件匹配判断
+    async def execute() -> list[FileUpdate]  # 执行逻辑
+    async def run()                  # 主循环
 ```
 
-### 生命周期
-
-```
-IDLE → READY → RUNNING → IDLE
-                  ↓
-              WAITING → READY
-                  ↓
-               ERROR（触发修复 Router）
-                  ↓
-            TERMINATED（子图关闭）
-```
-
-### 核心方法
-
-| 方法                                | 职责                                                                                                             |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `on_event(event: FileEvent) → bool` | 判断此事件是否应激活本节点。默认遍历 `guards`，命中任意一个即返回 `True`。子类可覆写以实现版本号比对、并发门控等 |
-| `execute() → List[FileUpdate]`      | 执行一步认知操作，返回文件变更列表。Agent 调用 LLM，Router 执行纯逻辑                                            |
-| `on_complete()`                     | 执行完成钩子。默认重置为 IDLE，子类可保持 READY 等待后续事件                                                     |
+`Node.run()` 在被 `Circuit` 以 `asyncio.Task` 托管后循环等待 `_ready_event`，被总线置位后调用 `execute()`。
 
 ## Agent
 
 ```python
 class Agent(Node):
-    host: ApplicationHost             # 应用宿主
-    system_prompt: str                # 系统提示词
-
-    async think(messages) → str      # 调用 LLM 网关
+    def __init__(self, node_id, host=None, *, system_prompt="", memory=None):
+        ...
 ```
 
-Agent 的 `execute()` 通常：读取 guards 中的文件 → 调用 `think()` → 将 LLM 输出写入 produces 中的文件。
+持有 `_host`（ApplicationHost 引用）、`_system_prompt`（注入 LLM 的消息）、`_memory`（UnifiedMemoryManager 引用）。
 
-**设计约束**：
-
-- 不自己调用 LLM API——走 `think()` 方法，内部经过统一 LLM 网关
-- 不直接访问 App 的私有文件
-- 产出是确定性文件，可版本回滚
+Agent 在执行时通常调用 `llm_chat()` 函数（`src/brain/ai/llm_gate.py`）——项目内所有 LLM 调用的唯一入口。
 
 ## Router
 
 ```python
 class Router(Node):
-    host: ApplicationHost | None     # 部分 Router 需要宿主能力
+    ...
 ```
 
-Router 是控制结构原语。当前已实现的 Router 类型（`src/brain/nodes/routers/`）：
-
-| Router             | 功能                                           |
-| ------------------ | ---------------------------------------------- |
-| `SwitchRouter`     | 检查文件内容条件，激活不同下游                 |
-| `WaitRouter`       | 等待多个文件满足条件后触发                     |
-| `MergeRouter`      | 将多个输入文件汇总为一个                       |
-| `HeartbeatRouter`  | 定时产生脉冲事件，驱动自主意识                 |
-| `ReflexRouter`     | 缓存规则匹配，短路径响应（零 LLM）            |
-| `FanOutRouter`     | 将事件扇出到多个下游节点                       |
-| `TerminalRouter`   | 关闭一个子图                                   |
-| `MemoryAgent`      | 将执行结果写入记忆存储                         |
+只是标记了 `type = "router"`。Router 的实现类不调用 LLM，执行纯机械逻辑。
 
 ## 文件相关数据结构
 
@@ -96,24 +63,20 @@ Router 是控制结构原语。当前已实现的 Router 类型（`src/brain/nod
 ```python
 @dataclass(slots=True)
 class FileDescriptor:
-    path: str                            # 文件路径
-    schema: str = "json"                 # 格式（json / yaml / text / ...）
-    lock: str = LockPolicy.WRITE_OVERWRITE  # 默认锁策略
+    path: str                    # 文件路径
+    schema: str = "json"         # 格式（json / text）
+    lock: str = "write_overwrite"# 锁策略
 ```
-
-声明一个节点**将产出**的文件。
 
 ### FilePattern
 
 ```python
 @dataclass(slots=True)
 class FilePattern:
-    pattern: str    # glob 模式，如 "intent.json" 或 "data/kernel/*.json"
+    pattern: str    # glob 模式，如 "inbox/event_*.json"
 
     def match(self, file_path: str) -> bool
 ```
-
-声明一个节点**守护**的文件模式。支持 glob 通配符。
 
 ### FileEvent
 
@@ -123,38 +86,59 @@ class FileEvent:
     path: str                # 变更文件路径
     change_type: str         # 变更类型
     timestamp: str           # 时间戳
-    version: int = 0         # 当前版本号
-    metadata: dict = {}      # 附加元信息
+    version: int = 0
+    metadata: dict = {}      # 含 source_node 等
 ```
-
-文件变更事件，由事件总线广播。节点通过 `on_event()` 判断是否应激活。
 
 ### FileUpdate
 
 ```python
 @dataclass(slots=True)
 class FileUpdate:
-    descriptor: FileDescriptor   # 目标文件
-    content: Any                 # 写入内容
-    mode: str = "overwrite"      # 写入模式
+    descriptor: FileDescriptor
+    content: Any
+    mode: str = "overwrite"   # overwrite / append
 ```
 
-节点执行完成后产出的文件变更。
+## 节点状态机
 
-## 锁策略
-
-```python
-class LockPolicy:
-    READ_ONLY = "read_only"           # 只读
-    WRITE_OVERWRITE = "write_overwrite"  # 可覆盖
-    APPEND_ONLY = "append_only"       # 只可追加
-
-    @staticmethod
-    def locked_by(node_id: str) -> str:
-        return f"locked_by_{node_id}"  # 动态独占锁
+```
+IDLE → READY → RUNNING → IDLE
+                 ↓
+               ERROR
 ```
 
-每个 `FileDescriptor` 声明其锁策略。运行时，锁机制确保同一时刻只有一个节点以写入模式操作同一文件。
+状态定义在 `NodeState` 枚举中：`IDLE`、`READY`、`RUNNING`、`WAITING`、`ERROR`、`TERMINATED`。`WAITING` 状态已在 `EventBridge` 和节点基类中使用（用于慢路径主动等待）。
+
+## 已实现的节点列表
+
+`src/brain/nodes/agents/`：
+
+| 文件                      | 注册名           | 职责                     |
+| ------------------------- | ---------------- | ------------------------ |
+| `plan_agent.py`           | `planner`        | LLM 将事件组整合为计划   |
+| `expand_agent.py`         | `expander`       | LLM 将计划展开为命令调用 |
+| `execute_agent.py`        | `executor`       | 调用命令并 LLM 判定结果  |
+| `goal_generator_agent.py` | `goal_generator` | 沉默时主动生成意图       |
+| `reflex_learner_agent.py` | `reflex_learner` | 从成功动作中提取规则     |
+
+`src/brain/nodes/routers/`：
+
+| 文件                  | 注册名      | 职责                      |
+| --------------------- | ----------- | ------------------------- |
+| `fanout_router.py`    | `fanout`    | 扇出事件到多个下游        |
+| `reflex_router.py`    | `reflex`    | 规则匹配，直接产出 action |
+| `switch_router.py`    | `switch`    | 条件分支                  |
+| `merge_router.py`     | `merge`     | 归并多个文件              |
+| `heartbeat_router.py` | `heartbeat` | 定时自触发脉冲            |
+| `terminal_router.py`  | `terminal`  | 关闭子图、移入归档        |
+| `memory_router.py`    | `memory`    | 写入三级记忆              |
+
+## 设计约束
+
+- Agent 不直接调用 LLM API——走 `llm_chat()` 统一入口
+- 节点无内部状态（LLM 上下文除外），`execute()` 后可回收
+- 文件生命周期：`pending/` → `done/` → `archived/`
 
 ## 下一步阅读
 
